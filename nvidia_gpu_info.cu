@@ -1,3 +1,7 @@
+/**  Konstantin Burlachenko (burlachenkok@gmail.com)
+* Console based application for enumerate installed NVIDIA GPU in the system and it's properties via CUDA runtime. Other usefull tool from NVIDIA is nvidia-smi
+*/
+
 #include <stdio.h>
 #include <cuda_runtime_api.h>
 
