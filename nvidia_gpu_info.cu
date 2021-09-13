@@ -4,6 +4,10 @@
 
 #include <stdio.h>
 #include <cuda_runtime_api.h>
+#include <time.h>
+#include <stdio.h>
+#include <sys/time.h>
+
 
 /** Reference
 *   http://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#compute-capabilities
@@ -41,10 +45,14 @@ int getSPcores(const cudaDeviceProp& devProp)
       break;
      case 7: // Volta (from this microarchitecture there are separate cores for FP32, FP64, INT operations)
       if (devProp.minor == 0) 
-          cores = mp * 64;
+          cores = mp * 64; // fp32 cores
       else 
           printf("Unknown device type for get Scalara Processor count\n");
       break;
+     case 8: // Ampere (in this microarchitecture there are separate cores for FP32, FP64, INT operations)
+      cores = mp * 64; // fp32 cores
+      break;
+
      default:
       printf("Unknown device type for get Scalara Processor count\n"); 
       break;
@@ -52,6 +60,71 @@ int getSPcores(const cudaDeviceProp& devProp)
     return cores;
 }
 
+template <int iterations>
+__global__ void sum(float *z, float *x, float *y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    volatile float xi = x[i];
+    volatile float yi = y[i];
+    volatile float zi = 0;
+
+    for (int j = 0; j < iterations; ++j)
+        zi = xi + yi;
+    z[i] = zi;
+}
+
+void computeBenchmark(int N = 2*1024*1024*128 /*number of items*/)
+{
+    float *x = 0, *y = 0, *z = 0, *d_x = 0, *d_y = 0, *d_z = 0;
+    x = (float*)malloc(N*sizeof(float));
+    y = (float*)malloc(N*sizeof(float));
+    z = (float*)malloc(N*sizeof(float));
+    cudaMalloc(&d_x, N*sizeof(float));
+    cudaMalloc(&d_y, N*sizeof(float));
+    cudaMalloc(&d_z, N*sizeof(float));
+    for (int i = 0; i < N; i++) {
+        x[i] = i * 1.0f;
+        y[i] = i * 2.0f;
+    }
+
+    // Args for cuda memcpy: dst, src, direction
+    cudaMemcpy(d_x, x, N*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y, y, N*sizeof(float), cudaMemcpyHostToDevice);
+    const int BlockSize = 1024;
+    if(d_x == 0 || d_y == 0 || d_z == 0)
+    {
+        printf("Memory allocation for %.0lf MBytes [FAILED]\n", (3*N*sizeof(float))/(1024.0*1024.0));
+        exit(-1);
+    }
+    else
+    {
+        printf("Memory allocation for %.0lf MBytes [OK]\n", (3*N*sizeof(float))/(1024.0*1024.0));
+    }
+
+    cudaDeviceSynchronize();
+    timeval s; gettimeofday(&s, 0);
+    const int kIterations = 1000*10;
+    sum<kIterations><<<N/BlockSize, BlockSize>>>(d_z, d_x, d_y);
+    cudaDeviceSynchronize();
+    timeval e; gettimeofday(&e, 0);
+
+    double seconds = (e.tv_sec - s.tv_sec) + (e.tv_usec - s.tv_usec)/(1e+6);
+    seconds = seconds;
+
+    cudaMemcpy(z, d_z, N*sizeof(float), cudaMemcpyDeviceToHost);
+    double maxError = 0.0f;
+    for (int i = 0; i < N; i++)
+    {
+        maxError = abs(z[i] - (x[i] + y[i])) > maxError ? abs(z[i] - (x[i] + y[i])) : maxError;
+    }
+
+    printf("  Max error for summation benchmark: %lf\n", maxError);
+    printf("  Time for compute benchmark: %lf seconds\n", seconds);
+    printf("  Computational performance after optimization: %lf TFLOPs\n", (kIterations*double(N))*(1.0/*add*/)/(seconds*1e+12));
+    cudaFree(&d_x);
+    cudaFree(&d_y);
+    cudaFree(&d_z);
+}
 
 int main()
 {
@@ -91,7 +164,9 @@ int main()
                                     ""       /*4*/,
                                     "MAXWELL"/*5*/,
                                     "PASCAL" /*6*/,
-                                    "VOLTA"  /*7*/ };
+                                    "VOLTA/TURING"  /*7*/,
+				    "AMPERE" /*8*/,
+                                    "Hooper" /*9*/};
 
         if (deviceProp.major < sizeof(arch_names)/sizeof(arch_names[0]))
             printf("  GPU Architecture:                              %s\n", arch_names[deviceProp.major]);
@@ -167,9 +242,10 @@ int main()
         printf("  Estimated Peak Single Precision TFLOPS:        %lf TFLOPS\n", peakPerformance_tflops);
         printf("  Estimated Ratio of instruction:bytes:          %lf\n", peakPerformance_tflops * 1000.0 / peakBandwidth_gb_sec);
         printf("\n");
-        printf("*************************************************************************************************\n");
-        printf(" NVIDIA GPU ARCHITECTURES: Fermi 2.* => Kepler 3.* => Maxwell 5.* => Pascal 6.* => Volta 7.* \n");
-        printf("*************************************************************************************************\n");
+        computeBenchmark();
+        printf("*******************************************************************************************************************\n");
+        printf(" NVIDIA GPU ARCHITECTURES: Fermi 2.* => Kepler 3.* => Maxwell 5.* => Pascal 6.* => Volta/Turing 7.* => Ampeter 8.* \n");
+        printf("*******************************************************************************************************************\n");
         printf("\n");
 
         /*
